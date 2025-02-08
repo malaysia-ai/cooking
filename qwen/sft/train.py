@@ -26,6 +26,37 @@ import torch
 
 torch._dynamo.config.optimize_ddp=False
 
+# monkey patch pytorch validation
+def _is_valid_woq_optimization_pattern():
+    def fn(match):
+        assert all(k in match.kwargs for k in ("x", "weight", "scales"))
+        try:
+            x = match.kwargs["x"].meta["val"]
+            weight = match.kwargs["weight"].meta["val"]
+            print(x.dtype, weight.dtype, x.device)
+            scales = match.kwargs["scales"].meta["val"]
+            
+            return (
+                # For now, we only support woq mm kernels
+                # with x.type=bfloat16 and w.type=int8
+                x.dtype == torch.bfloat16
+                and weight.dtype == torch.int8
+                and scales.dtype == torch.bfloat16
+                # _weight_int8pack_mm kernel only supports cpu now
+                # TODO: add cuda kernel support instead of calling mul+sum
+                and x.device.type == "cpu"
+                and x.device == weight.device
+                and x.device == scales.device
+            )
+        except Exception as e:
+            print(e, match)
+            return False
+
+    return fn
+
+from torch._inductor.fx_passes import quantization
+quantization._is_valid_woq_optimization_pattern = _is_valid_woq_optimization_pattern
+
 import logging
 import math
 import os
