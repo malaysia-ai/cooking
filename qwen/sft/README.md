@@ -1,4 +1,4 @@
-# Llama based SFT
+# Qwen based SFT
 
 ## requirements
 
@@ -16,20 +16,8 @@ By using LoRA CCE loss, we can fit 256 LoRA on almost linear layers including em
 
 ### LoRA
 
-#### Llama 3.2 1B Instruct
-
-1. Finetune,
+#### Qwen 2.5 1.5B Instruct
 
 ```bash
-bash 3.1-1b.sh
-```
-
-2. Merge back [merge-1b.ipynb](merge-1b.ipynb).
-
-#### Llama 3.2 3B Instruct
-
-1. Finetune,
-
-```bash
-bash 3.1-3b.sh
+bash 2.5-1.5b.sh
 ```
