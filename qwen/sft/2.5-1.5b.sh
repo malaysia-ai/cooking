@@ -4,8 +4,8 @@ TORCH_DISTRIBUTED_DEBUG="info" \
 torchrun --nproc_per_node 2 \
 -m train \
 --model_name_or_path Qwen/Qwen2.5-1.5B-Instruct \
---per_device_train_batch_size 2 \
---gradient_accumulation_steps 6 \
+--per_device_train_batch_size 3 \
+--gradient_accumulation_steps 4 \
 --output_dir malaysian-Qwen2.5-1.5B-Instruct \
 --bf16 --do_train --do_eval false --num_train_epochs 5 \
 --train_file packing-4k \
@@ -18,4 +18,5 @@ torchrun --nproc_per_node 2 \
 --gradient_checkpointing true \
 --ddp_find_unused_parameters false \
 --neftune_noise_alpha 5.0 \
---torch_dtype bfloat16 
+--torch_dtype bfloat16 \
+--torch_compile

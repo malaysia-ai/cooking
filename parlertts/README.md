@@ -29,14 +29,14 @@ Dataset at https://huggingface.co/datasets/mesolitica/TTS, notebook preparation 
 
 ## Finetune
 
+### Tiny V1
+
+```bash
+bash parler-tiny.sh
+```
+
 ### Mini V1
 
 ```bash
 bash parler-mini.sh
-```
-
-### Large V1
-
-```bash
-bash parler-large.sh
 ```
