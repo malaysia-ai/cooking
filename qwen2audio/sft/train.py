@@ -276,24 +276,26 @@ class Model(Qwen2AudioForConditionalGeneration):
     def __init__(self, config):
         super().__init__(config)
         
-    def forward(self, input_ids, attention_mask, input_features, feature_attention_mask, labels = None, **kwargs):
+    def forward(self, input_ids, attention_mask, position_ids, input_features = None, feature_attention_mask = None, labels = None, **kwargs):
         super_out = super().forward(
             input_ids = input_ids, 
             attention_mask = attention_mask, 
+            position_ids = position_ids,
             input_features = input_features, 
             feature_attention_mask = feature_attention_mask,
         )
         if labels is not None:
-            shift_attention_mask = attention_mask[..., 1:]
             logits = super_out.logits
-            shift_logits = logits[..., :-1, :][shift_attention_mask.to(logits.device) != 0].contiguous()
-            shift_labels = labels[..., 1:][shift_attention_mask.to(labels.device) != 0].contiguous()
-            loss_fct = nn.CrossEntropyLoss()
-            loss = loss_fct(
-                shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1).to(shift_logits.device)
-            )
+            vocab_size = logits.shape[-1]
+            logits = logits.float()
+            labels = labels.to(logits.device)
+            labels = nn.functional.pad(labels, (0, 1), value=-100)
+            shift_labels = labels[..., 1:].contiguous()
+            logits = logits.view(-1, vocab_size)
+            shift_labels = shift_labels.view(-1)
+            shift_labels = shift_labels.to(logits.device)
+            loss = nn.functional.cross_entropy(logits, shift_labels, ignore_index=-100, reduction='mean')
             return {'loss': loss}
-        return super_out
 
 def main():
 
@@ -430,7 +432,7 @@ def main():
 
                     while "<placeholder>" in sample:
                         sample = sample.replace("<placeholder>", replace_str.pop(0), 1)
-                    
+
                     inputs = {
                         'input_ids': sample,
                         'input_features': inputs_audio['input_features'],
@@ -438,13 +440,15 @@ def main():
                     }
                     return inputs
                 else:
+                    data.pop('text', None)
+                    data.pop('audio')
                     data['labels'] = data["input_ids"].copy()
                     masking = data.pop('attention_mask')
-                    
+
                     data.pop('token_type_ids', None)
                     for k in data.keys():
-                        data[k] = data[k].astype(np.int64)
-                        
+                        data[k] = torch.tensor(data[k].astype(np.int64))
+
                     masks = []
                     for m in masking:
                         masks.append(torch.tril(torch.ones(m, m)))
@@ -466,27 +470,28 @@ def main():
 
         for b in batch:
             if 'input_features' in b:
-                input_ids = processor.tokenizer(
+                input_ids_ = processor.tokenizer(
                     [b['input_ids']], 
                     return_tensors = 'pt', 
                     truncation = True, 
                     max_length = sequence_length,
                     padding = 'max_length',
                 )
-                labels = input_ids['input_ids'].clone()
-                labels[labels == audio_token_id] = -100
-                labels[labels == pad_token_id] = -100
-                input_ids.append(input_ids['input_ids'])
-                labels.append(labels)
-                cache_position = torch.arange(0, input_ids['input_ids'].shape[1])
+                attention_mask_ = input_ids_['attention_mask']
+                labels_ = input_ids_['input_ids'].clone()
+                labels_[labels_ == audio_token_id] = -100
+                labels_[labels_ == pad_token_id] = -100
+                input_ids.append(input_ids_['input_ids'])
+                labels.append(labels_)
+                cache_position = torch.arange(0, input_ids_['input_ids'].shape[1])
                 causal_mask = torch.full(
                     (sequence_length, sequence_length), fill_value=min_dtype, dtype=torch_dtype
                 )
                 causal_mask *= torch.arange(sequence_length) > cache_position.reshape(-1, 1)
-                causal_mask = causal_mask[None, None, :, :].expand(batch_size, 1, -1, -1)
+                causal_mask = causal_mask[None, None, :, :]
                 causal_mask = causal_mask.clone()
-                mask_length = attention_mask.shape[-1]
-                padding_mask = causal_mask[:, :, :, :mask_length] + attention_mask[:, None, None, :]
+                mask_length = attention_mask_.shape[-1]
+                padding_mask = causal_mask[:, :, :, :mask_length] + attention_mask_[:, None, None, :]
                 padding_mask = padding_mask == 0
                 causal_mask[:, :, :, :mask_length] = causal_mask[:, :, :, :mask_length].masked_fill(
                     padding_mask, min_dtype
@@ -500,7 +505,7 @@ def main():
                 attention_mask.append(b['attention_mask'][None])
                 position_ids.append(b['position_ids'][None])
                 labels.append(b['labels'][None])
-        
+
         input_ids = {
             'input_ids': torch.concat(input_ids, 0),
             'attention_mask': torch.concat(attention_mask, 0),
@@ -510,7 +515,7 @@ def main():
         if len(input_features):
             input_ids['input_features'] = torch.concat(input_features, 0)
             input_ids['feature_attention_mask'] = torch.concat(feature_attention_mask, 0)
-        
+
         return input_ids
 
     dataset = DatasetFixed(data_args.train_file)
@@ -523,7 +528,14 @@ def main():
     )
 
     selected = ["q_proj", "k_proj", "v_proj", "o_proj",
-                        "gate_proj", "up_proj", "down_proj", "embed_tokens", "lm_head"]
+                  "gate_proj", "up_proj", "down_proj", "embed_tokens", "lm_head"]
+
+    target_modules = []
+    for id, (name, param) in enumerate(model.named_modules()):
+        if 'language_model.model' in name and any([s in name for s in selected]):
+            target_modules.append(name)
+    if 'lm_head' in selected:
+        target_modules.append('language_model.lm_head')
 
     peft_config = LoraConfig(
         lora_alpha=model_args.rank * 2,
@@ -531,7 +543,7 @@ def main():
         r=model_args.rank,
         bias="none",
         task_type="CAUSAL_LM",
-        target_modules=,
+        target_modules=target_modules,
     )
 
     if hasattr(model, "enable_input_require_grads"):
@@ -542,13 +554,7 @@ def main():
 
         model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
     
-    model.language_model = get_peft_model(model.language_model, peft_config)
-    for param in model.audio_tower.parameters():
-        param.requires_grad = False
-        
-    for param in model.multi_modal_projector.parameters():
-        param.requires_grad = False
-
+    model = get_peft_model(model, peft_config)
     print_trainable_parameters(model)
 
     trainer = Trainer(

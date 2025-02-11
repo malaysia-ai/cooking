@@ -9,7 +9,7 @@ torchrun --nproc_per_node 4 \
 --gradient_accumulation_steps 6 \
 --output_dir lora-embedding-128-qwen2audio-7b \
 --bf16 --do_train --do_eval false --num_train_epochs 5 \
---train_file audio-qa-pretrained.jsonl \
+--train_file audio-qa-pretrained \
 --logging_steps 1 \
 --learning_rate 2e-5 \
 --weight_decay 0.01 \

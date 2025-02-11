@@ -41,9 +41,18 @@ from huggingface_hub import snapshot_download
 snapshot_download(repo_id='malaysia-ai/Speech-to-Speech', repo_type='dataset', 
                   allow_patterns = 'filter-*.zip', local_dir = './')
 \"
-/workspace/7zz x filter-audio.7z.001 -y -mmt40
-wget https://raw.githubusercontent.com/mesolitica/malaysian-dataset/refs/heads/master/text-to-speech/emilia/unzip.py
+wget https://raw.githubusercontent.com/malaysia-ai/cooking/refs/heads/master/qwen2audio/sft/unzip.py
 python3 unzip.py
+"
+
+cmd4="
+export LC_ALL=en_US.UTF-8; export LANG=en_US.UTF-8;
+cd /workspace
+python3 -c \"
+from huggingface_hub import snapshot_download
+snapshot_download(repo_id='huseinzol05/malaysian-audio-qa-pretraining', repo_type='dataset', 
+                  local_dir = './audio-qa-pretrained')
+\"
 "
 
 bash -c "$cmd1" &
@@ -55,4 +64,7 @@ pid2=$!
 bash -c "$cmd3" &
 pid3=$!
 
-wait $pid1 $pid2 $pid3
+bash -c "$cmd4" &
+pid4=$!
+
+wait $pid1 $pid2 $pid3 $pid4
