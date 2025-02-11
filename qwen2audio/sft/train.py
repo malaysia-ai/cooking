@@ -65,6 +65,8 @@ from transformers.models.llama.modeling_llama import LlamaForCausalLM
 import json
 import os
 import numpy as np
+from streaming import LocalDataset
+from streaming.base.format.mds.encodings import Encoding, _encodings
 from peft import LoraConfig, get_peft_model
 from cut_cross_entropy import linear_cross_entropy
 
@@ -74,10 +76,17 @@ require_version(
 
 logger = logging.getLogger(__name__)
 
+class UInt32(Encoding):
+    def encode(self, obj) -> bytes:
+        return obj.tobytes()
+
+    def decode(self, data: bytes):
+        return np.frombuffer(data, np.uint32)
+
+_encodings['uint32'] = UInt32
 
 MODEL_CONFIG_CLASSES = list(MODEL_FOR_CAUSAL_LM_MAPPING.keys())
 MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
-
 
 @dataclass
 class ModelArguments:
@@ -248,6 +257,21 @@ def print_trainable_parameters(model):
         f"trainable params: {trainable_params} || all params: {all_param} || trainable%: {100 * trainable_params / all_param}"
     )
 
+def block_diagonal_concat_inverted(*masks, dtype=torch.bfloat16):
+    total_size = sum(mask.size(0) for mask in masks)
+    combined_mask = torch.zeros(total_size, total_size, dtype=dtype)
+
+    current_pos = 0
+
+    for mask in masks:
+        size = mask.size(0)
+        combined_mask[current_pos:current_pos + size, current_pos:current_pos + size] = mask
+        current_pos += size
+
+    min_value = torch.finfo(dtype).min if dtype.is_floating_point else torch.iinfo(dtype).min
+    inverted_mask = torch.where(combined_mask == 1, torch.tensor(0, dtype=dtype), min_value)
+    return inverted_mask.unsqueeze(0)
+
 class Model(Qwen2AudioForConditionalGeneration):
     def __init__(self, config):
         super().__init__(config)
@@ -349,65 +373,84 @@ def main():
     audio_token_id = processor.tokenizer._convert_token_to_id_with_added_voc('<|AUDIO|>')
     pad_token_id = processor.tokenizer.pad_token_id
 
+    torch_dtype = (
+        model_args.torch_dtype
+        if model_args.torch_dtype in ["auto", None]
+        else getattr(torch, model_args.torch_dtype)
+    )
+    min_dtype = torch.finfo(torch_dtype).min
+    sequence_length = data_args.block_size
+
     class DatasetFixed(torch.utils.data.Dataset):
         def __init__(self, local):
-            self.dataset = []
-            with open(local) as fopen:
-                for l in fopen:
-                    l = json.loads(l)
-                    self.dataset.append(l)
+            self.dataset = LocalDataset(local=local)
             self.audio = Audio(sampling_rate=16000)
 
         def __getitem__(self, idx):
             data = self.dataset[idx]
-            f = data['audio']
-            f = f.replace('output-audio/', 'filter-audio/')
-            if not os.path.exists(f):
-                return None
             try:
-                audio = self.audio.decode_example(
-                    self.audio.encode_example(f))['array']
+                f = data['audio']
+                if len(f):
+                    f = f.replace('output-audio/', 'filter-audio/')
+                    if not os.path.exists(f):
+                        return None
+                    audio = self.audio.decode_example(
+                        self.audio.encode_example(f))['array']
 
-                inputs_audio = processor.feature_extractor([audio], return_attention_mask=True, padding="max_length", return_tensors = 'pt')
-                audio_lengths = inputs_audio["attention_mask"].sum(-1).tolist()
+                    inputs_audio = processor.feature_extractor([audio], return_attention_mask=True, padding="max_length", return_tensors = 'pt')
+                    audio_lengths = inputs_audio["attention_mask"].sum(-1).tolist()
 
-                sample = data['text']
-                num_audio_tokens = sample.count(audio_token)
-                replace_str = []
-                while audio_token in sample:
-                    audio_length = audio_lengths.pop(0)
-                    input_length = (audio_length - 1) // 2 + 1
-                    num_audio_tokens = (input_length - 2) // 2 + 1
+                    sample = data['text']
+                    num_audio_tokens = sample.count(audio_token)
+                    replace_str = []
+                    while audio_token in sample:
+                        audio_length = audio_lengths.pop(0)
+                        input_length = (audio_length - 1) // 2 + 1
+                        num_audio_tokens = (input_length - 2) // 2 + 1
 
-                    expanded_audio_token = audio_token * num_audio_tokens
+                        expanded_audio_token = audio_token * num_audio_tokens
 
-                    audio_token_start_idx = sample.find(audio_token)
-                    audio_token_end_idx = audio_token_start_idx + len(audio_token)
+                        audio_token_start_idx = sample.find(audio_token)
+                        audio_token_end_idx = audio_token_start_idx + len(audio_token)
 
-                    has_bos = (
-                        sample[audio_token_start_idx - len(audio_bos_token) : audio_token_start_idx]
-                        == audio_bos_token
-                    )
-                    has_eos = (
-                        sample[audio_token_end_idx : audio_token_end_idx + len(audio_eos_token)]
-                        == audio_eos_token
-                    )
+                        has_bos = (
+                            sample[audio_token_start_idx - len(audio_bos_token) : audio_token_start_idx]
+                            == audio_bos_token
+                        )
+                        has_eos = (
+                            sample[audio_token_end_idx : audio_token_end_idx + len(audio_eos_token)]
+                            == audio_eos_token
+                        )
 
-                    if not has_bos and not has_eos:
-                        expanded_audio_token = audio_bos_token + expanded_audio_token + audio_eos_token
+                        if not has_bos and not has_eos:
+                            expanded_audio_token = audio_bos_token + expanded_audio_token + audio_eos_token
 
-                    replace_str.append(expanded_audio_token)
-                    sample = sample.replace(audio_token, "<placeholder>", 1)
+                        replace_str.append(expanded_audio_token)
+                        sample = sample.replace(audio_token, "<placeholder>", 1)
 
-                while "<placeholder>" in sample:
-                    sample = sample.replace("<placeholder>", replace_str.pop(0), 1)
-                
-                inputs = {
-                    'input_ids': sample,
-                    'input_features': inputs_audio['input_features'],
-                    'feature_attention_mask': inputs_audio['attention_mask'],
-                }
-                return inputs
+                    while "<placeholder>" in sample:
+                        sample = sample.replace("<placeholder>", replace_str.pop(0), 1)
+                    
+                    inputs = {
+                        'input_ids': sample,
+                        'input_features': inputs_audio['input_features'],
+                        'feature_attention_mask': inputs_audio['attention_mask'],
+                    }
+                    return inputs
+                else:
+                    data['labels'] = data["input_ids"].copy()
+                    masking = data.pop('attention_mask')
+                    
+                    data.pop('token_type_ids', None)
+                    for k in data.keys():
+                        data[k] = data[k].astype(np.int64)
+                        
+                    masks = []
+                    for m in masking:
+                        masks.append(torch.tril(torch.ones(m, m)))
+                    attention_mask = block_diagonal_concat_inverted(*masks)
+                    data['attention_mask'] = attention_mask
+                    return data
 
             except Exception as e:
                 print(e)
@@ -418,21 +461,55 @@ def main():
 
     def collator(batch):
         batch = [b for b in batch if b is not None] 
-        texts = [b['input_ids'] for b in batch]
+        input_ids, attention_mask, position_ids, labels = [], [], [], []
+        input_features, feature_attention_mask = [], []
+
+        for b in batch:
+            if 'input_features' in b:
+                input_ids = processor.tokenizer(
+                    [b['input_ids']], 
+                    return_tensors = 'pt', 
+                    truncation = True, 
+                    max_length = sequence_length,
+                    padding = 'max_length',
+                )
+                labels = input_ids['input_ids'].clone()
+                labels[labels == audio_token_id] = -100
+                labels[labels == pad_token_id] = -100
+                input_ids.append(input_ids['input_ids'])
+                labels.append(labels)
+                cache_position = torch.arange(0, input_ids['input_ids'].shape[1])
+                causal_mask = torch.full(
+                    (sequence_length, sequence_length), fill_value=min_dtype, dtype=torch_dtype
+                )
+                causal_mask *= torch.arange(sequence_length) > cache_position.reshape(-1, 1)
+                causal_mask = causal_mask[None, None, :, :].expand(batch_size, 1, -1, -1)
+                causal_mask = causal_mask.clone()
+                mask_length = attention_mask.shape[-1]
+                padding_mask = causal_mask[:, :, :, :mask_length] + attention_mask[:, None, None, :]
+                padding_mask = padding_mask == 0
+                causal_mask[:, :, :, :mask_length] = causal_mask[:, :, :, :mask_length].masked_fill(
+                    padding_mask, min_dtype
+                )
+                attention_mask.append(causal_mask)
+                position_ids.append(cache_position[None])
+                input_features.append(b['input_features'])
+                feature_attention_mask.append(b['feature_attention_mask'])
+            else:
+                input_ids.append(b['input_ids'][None])
+                attention_mask.append(b['attention_mask'][None])
+                position_ids.append(b['position_ids'][None])
+                labels.append(b['labels'][None])
         
-        input_ids = processor.tokenizer(
-            texts, 
-            return_tensors = 'pt', 
-            truncation = True, 
-            max_length = data_args.block_size,
-            padding = True,
-        )
-        labels = input_ids['input_ids'].clone()
-        labels[labels == audio_token_id] = -100
-        labels[labels == pad_token_id] = -100
-        input_ids['labels'] = labels
-        input_ids['input_features'] = torch.concat([b['input_features'] for b in batch], 0)
-        input_ids['feature_attention_mask'] = torch.concat([b['feature_attention_mask'] for b in batch], 0)
+        input_ids = {
+            'input_ids': torch.concat(input_ids, 0),
+            'attention_mask': torch.concat(attention_mask, 0),
+            'position_ids': torch.concat(position_ids, 0),
+            'labels': torch.concat(labels, 0),
+        }
+        if len(input_features):
+            input_ids['input_features'] = torch.concat(input_features, 0)
+            input_ids['feature_attention_mask'] = torch.concat(feature_attention_mask, 0)
         
         return input_ids
 
@@ -440,15 +517,13 @@ def main():
     print('dataset', len(dataset), dataset[0])
     print(collator([dataset[0], dataset[1]]))
 
-    torch_dtype = (
-        model_args.torch_dtype
-        if model_args.torch_dtype in ["auto", None]
-        else getattr(torch, model_args.torch_dtype)
-    )
     model = Model.from_pretrained(
         model_args.model_name_or_path, 
-        torch_dtype = torch_dtype
+        torch_dtype = torch_dtype,
     )
+
+    selected = ["q_proj", "k_proj", "v_proj", "o_proj",
+                        "gate_proj", "up_proj", "down_proj", "embed_tokens", "lm_head"]
 
     peft_config = LoraConfig(
         lora_alpha=model_args.rank * 2,
@@ -456,8 +531,7 @@ def main():
         r=model_args.rank,
         bias="none",
         task_type="CAUSAL_LM",
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
-                        "gate_proj", "up_proj", "down_proj", "embed_tokens", "lm_head"],
+        target_modules=,
     )
 
     if hasattr(model, "enable_input_require_grads"):
