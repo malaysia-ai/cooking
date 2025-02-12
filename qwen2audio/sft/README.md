@@ -13,6 +13,14 @@ pip3 install git+https://github.com/malaysia-ai/qwen2audio-multipack
 pip3 install git+https://github.com/malaysia-ai/ml-cross-entropy-lora-lm-head
 ```
 
+Optional,
+
+```bash
+pip3 install notebook==6.5.6
+apt install screen -y
+screen -dmS jupyter_session bash -c "jupyter notebook --NotebookApp.token='' --no-browser --allow-root --notebook-dir='/workspace'"
+```
+
 ## dataset preparation
 
 1. We use multipacking 4k context length with proper multi-documents masking, [packing-text-instructions.ipynb](packing-text-instructions.ipynb).

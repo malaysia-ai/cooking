@@ -29,6 +29,7 @@ import math
 import os
 import sys
 import warnings
+import torch.nn.functional as F
 from dataclasses import dataclass, field
 from itertools import chain
 from typing import Optional
@@ -272,6 +273,16 @@ def block_diagonal_concat_inverted(*masks, dtype=torch.bfloat16):
     inverted_mask = torch.where(combined_mask == 1, torch.tensor(0, dtype=dtype), min_value)
     return inverted_mask.unsqueeze(0)
 
+def pad_attention_mask_4d(attention_mask, max_size = 4096, value = 0.0):
+    maxlen_right = max_size
+    maxlen_bottom = max_size
+    attention_mask = [
+        F.pad(
+            attention_mask[i],
+            (0, maxlen_right - attention_mask[i].shape[-2], 0, maxlen_bottom - attention_mask[i].shape[-1]), value = value) for i in range(
+            len(attention_mask))]
+    return torch.stack(attention_mask)
+
 class Model(Qwen2AudioForConditionalGeneration):
     def __init__(self, config):
         super().__init__(config)
@@ -391,73 +402,44 @@ def main():
         def __getitem__(self, idx):
             data = self.dataset[idx]
             try:
-                f = data['audio']
-                if len(f):
-                    f = f.replace('output-audio/', 'filter-audio/')
-                    if not os.path.exists(f):
-                        return None
-                    audio = self.audio.decode_example(
+                data.pop('text', None)
+                audio_files = data.pop('audio', '')
+                data['labels'] = data["input_ids"].copy()
+                masking = data.pop('attention_mask')
+
+                data.pop('token_type_ids', None)
+                for k in data.keys():
+                    data[k] = torch.tensor(data[k].astype(np.int64))
+
+                masks = []
+                for m in masking:
+                    masks.append(torch.tril(torch.ones(m, m)))
+                attention_mask = block_diagonal_concat_inverted(*masks)
+                data['attention_mask'] = attention_mask
+
+                data['labels'][data['labels'] == audio_token_id] = -100
+                data['labels'][data['labels'] == pad_token_id] = -100
+
+                if len(audio_files):
+                    files = json.loads(audio_files)
+                    audios = []
+                    for f in files:
+                        audio = self.audio.decode_example(
                         self.audio.encode_example(f))['array']
+                        audios.append(audio)
 
-                    inputs_audio = processor.feature_extractor([audio], return_attention_mask=True, padding="max_length", return_tensors = 'pt')
-                    audio_lengths = inputs_audio["attention_mask"].sum(-1).tolist()
+                    inputs_audio = processor.feature_extractor(
+                        audios, return_attention_mask=True, 
+                        sampling_rate=16000,
+                        padding="max_length", return_tensors = 'pt')
 
-                    sample = data['text']
-                    num_audio_tokens = sample.count(audio_token)
-                    replace_str = []
-                    while audio_token in sample:
-                        audio_length = audio_lengths.pop(0)
-                        input_length = (audio_length - 1) // 2 + 1
-                        num_audio_tokens = (input_length - 2) // 2 + 1
-
-                        expanded_audio_token = audio_token * num_audio_tokens
-
-                        audio_token_start_idx = sample.find(audio_token)
-                        audio_token_end_idx = audio_token_start_idx + len(audio_token)
-
-                        has_bos = (
-                            sample[audio_token_start_idx - len(audio_bos_token) : audio_token_start_idx]
-                            == audio_bos_token
-                        )
-                        has_eos = (
-                            sample[audio_token_end_idx : audio_token_end_idx + len(audio_eos_token)]
-                            == audio_eos_token
-                        )
-
-                        if not has_bos and not has_eos:
-                            expanded_audio_token = audio_bos_token + expanded_audio_token + audio_eos_token
-
-                        replace_str.append(expanded_audio_token)
-                        sample = sample.replace(audio_token, "<placeholder>", 1)
-
-                    while "<placeholder>" in sample:
-                        sample = sample.replace("<placeholder>", replace_str.pop(0), 1)
-
-                    inputs = {
-                        'input_ids': sample,
-                        'input_features': inputs_audio['input_features'],
-                        'feature_attention_mask': inputs_audio['attention_mask'],
-                    }
-                    return inputs
-                else:
-                    data.pop('text', None)
-                    data.pop('audio')
-                    data['labels'] = data["input_ids"].copy()
-                    masking = data.pop('attention_mask')
-
-                    data.pop('token_type_ids', None)
-                    for k in data.keys():
-                        data[k] = torch.tensor(data[k].astype(np.int64))
-
-                    masks = []
-                    for m in masking:
-                        masks.append(torch.tril(torch.ones(m, m)))
-                    attention_mask = block_diagonal_concat_inverted(*masks)
-                    data['attention_mask'] = attention_mask
-                    return data
+                    data['input_features'] = inputs_audio['input_features']
+                    data['feature_attention_mask'] = inputs_audio['attention_mask']
+                    
+                return data
 
             except Exception as e:
-                print(e)
+                print('Exception', e)
                 return None
 
         def __len__(self):
@@ -470,45 +452,16 @@ def main():
 
         for b in batch:
             if 'input_features' in b:
-                input_ids_ = processor.tokenizer(
-                    [b['input_ids']], 
-                    return_tensors = 'pt', 
-                    truncation = True, 
-                    max_length = sequence_length,
-                    padding = 'max_length',
-                )
-                attention_mask_ = input_ids_['attention_mask']
-                labels_ = input_ids_['input_ids'].clone()
-                labels_[labels_ == audio_token_id] = -100
-                labels_[labels_ == pad_token_id] = -100
-                input_ids.append(input_ids_['input_ids'])
-                labels.append(labels_)
-                cache_position = torch.arange(0, input_ids_['input_ids'].shape[1])
-                causal_mask = torch.full(
-                    (sequence_length, sequence_length), fill_value=min_dtype, dtype=torch_dtype
-                )
-                causal_mask *= torch.arange(sequence_length) > cache_position.reshape(-1, 1)
-                causal_mask = causal_mask[None, None, :, :]
-                causal_mask = causal_mask.clone()
-                mask_length = attention_mask_.shape[-1]
-                padding_mask = causal_mask[:, :, :, :mask_length] + attention_mask_[:, None, None, :]
-                padding_mask = padding_mask == 0
-                causal_mask[:, :, :, :mask_length] = causal_mask[:, :, :, :mask_length].masked_fill(
-                    padding_mask, min_dtype
-                )
-                attention_mask.append(causal_mask)
-                position_ids.append(cache_position[None])
                 input_features.append(b['input_features'])
                 feature_attention_mask.append(b['feature_attention_mask'])
-            else:
-                input_ids.append(b['input_ids'][None])
-                attention_mask.append(b['attention_mask'][None])
-                position_ids.append(b['position_ids'][None])
-                labels.append(b['labels'][None])
+            input_ids.append(b['input_ids'][None])
+            attention_mask.append(b['attention_mask'])
+            position_ids.append(b['position_ids'][None])
+            labels.append(b['labels'][None])
 
         input_ids = {
             'input_ids': torch.concat(input_ids, 0),
-            'attention_mask': torch.concat(attention_mask, 0),
+            'attention_mask': pad_attention_mask_4d(attention_mask, sequence_length, min_dtype),
             'position_ids': torch.concat(position_ids, 0),
             'labels': torch.concat(labels, 0),
         }

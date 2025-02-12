@@ -21,7 +21,7 @@ def multiprocessing(strings, function, cores=6, returned=True):
         return list(itertools.chain(*pooled))
 
 def main():
-    files = glob('filter-*.zip')
+    files = glob('*.zip')
 
     def loop(files):
         files, _ = files

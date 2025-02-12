@@ -14,38 +14,15 @@ export LC_ALL=en_US.UTF-8; export LANG=en_US.UTF-8;
 cd /workspace
 python3 -c \"
 from huggingface_hub import snapshot_download
-snapshot_download(repo_id='mesolitica/Malaysian-audio-QA-pre-training', repo_type='dataset', 
-                  allow_patterns = 'slice-audio.z*', local_dir = './')
-\"
-/workspace/7zz x slice-audio.zip -y -mmt40
-rm filtered-24k_processed.z*
-"
-
-cmd2="
-export LC_ALL=en_US.UTF-8; export LANG=en_US.UTF-8;
-cd /workspace
-python3 -c \"
-from huggingface_hub import snapshot_download
-snapshot_download(repo_id='mesolitica/malaysian-youtube-audio-instructions', repo_type='dataset', 
-                  allow_patterns = 'filter-audio.7z.*', local_dir = './')
-\"
-/workspace/7zz x filter-audio.7z.001 -y -mmt40
-rm filter-audio.7z.*
-"
-
-cmd3="
-export LC_ALL=en_US.UTF-8; export LANG=en_US.UTF-8;
-cd /workspace
-python3 -c \"
-from huggingface_hub import snapshot_download
+allow_patterns = ['mixtral-audio-instruction.zip', 'random-question-chunks.zip', 'sample-filter-gpt-omni-voiceassistant-400k-*.zip']
 snapshot_download(repo_id='malaysia-ai/Speech-to-Speech', repo_type='dataset', 
-                  allow_patterns = 'filter-*.zip', local_dir = './')
+                  allow_patterns = allow_patterns, local_dir = './')
 \"
-wget https://raw.githubusercontent.com/malaysia-ai/cooking/refs/heads/master/qwen2audio/sft/unzip.py
+wget https://raw.githubusercontent.com/malaysia-ai/cooking/refs/heads/main/qwen2audio/sft/unzip.py
 python3 unzip.py
 "
 
-cmd4="
+cmd2="
 export LC_ALL=en_US.UTF-8; export LANG=en_US.UTF-8;
 cd /workspace
 python3 -c \"
@@ -61,10 +38,4 @@ pid1=$!
 bash -c "$cmd2" &
 pid2=$!
 
-bash -c "$cmd3" &
-pid3=$!
-
-bash -c "$cmd4" &
-pid4=$!
-
-wait $pid1 $pid2 $pid3 $pid4
+wait $pid1 $pid2
