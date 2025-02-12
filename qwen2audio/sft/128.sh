@@ -1,15 +1,14 @@
 WANDB_PROJECT="lora-embedding-128-qwen2audio-7b" \
 HF_HOME="/workspace/cache" \
 TORCH_DISTRIBUTED_DEBUG="info" \
-torchrun --nproc_per_node 3 \
+torchrun --nproc_per_node 8 \
 -m train \
---deepspeed ds_config_zero3.json \
 --model_name_or_path Qwen/Qwen2-Audio-7B-Instruct \
---per_device_train_batch_size 6 \
---gradient_accumulation_steps 2 \
+--per_device_train_batch_size 2 \
+--gradient_accumulation_steps 4 \
 --output_dir lora-embedding-128-qwen2audio-7b \
 --bf16 --do_train --do_eval false --num_train_epochs 5 \
---train_file audio-qa-pretrained-text \
+--train_file audio-qa-pretrained \
 --logging_steps 1 \
 --learning_rate 2e-5 \
 --weight_decay 0.01 \

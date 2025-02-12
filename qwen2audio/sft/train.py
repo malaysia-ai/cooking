@@ -422,16 +422,30 @@ def main():
 
                 if len(audio_files):
                     files = json.loads(audio_files)
+                    
                     audios = []
+                    new_files = []
                     for f in files:
+                        f = f.replace('slice-audio/', 'random-question-chunks/')
+                        f = f.replace('output-audio/', 'filter-audio/')
+                        f = f.replace('filter-gpt-omni-voiceassistant-400k/', 'sample-filter-gpt-omni-voiceassistant-400k/')
                         audio = self.audio.decode_example(
                         self.audio.encode_example(f))['array']
                         audios.append(audio)
+                        new_files.append(f)
 
                     inputs_audio = processor.feature_extractor(
                         audios, return_attention_mask=True, 
                         sampling_rate=16000,
                         padding="max_length", return_tensors = 'pt')
+
+                    input_lengths = (inputs_audio['attention_mask'].sum(-1) - 1) // 2 + 1
+                    output_lengths = (input_lengths - 2) // 2 + 1
+                    output_lengths = sum(output_lengths).tolist()
+                    audio_tokens = data['input_ids'][data['input_ids'] == audio_token_id].shape[0]
+                    if audio_tokens != output_lengths:
+                        print(idx, audio_tokens, output_lengths, 'length speech tokens not match', new_files)
+                        return
 
                     data['input_features'] = inputs_audio['input_features']
                     data['feature_attention_mask'] = inputs_audio['attention_mask']
@@ -472,8 +486,8 @@ def main():
         return input_ids
 
     dataset = DatasetFixed(data_args.train_file)
-    print('dataset', len(dataset), dataset[0])
-    print(collator([dataset[0], dataset[1]]))
+    # print('dataset', len(dataset), dataset[0])
+    # print(collator([dataset[0], dataset[1]]))
 
     model = Model.from_pretrained(
         model_args.model_name_or_path, 

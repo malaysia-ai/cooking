@@ -33,7 +33,7 @@ screen -dmS jupyter_session bash -c "jupyter notebook --NotebookApp.token='' --n
 1. Finetune,
 
 ```bash
-wget https://raw.githubusercontent.com/mesolitica/malaya/refs/heads/master/session/llama3/ds_config_zero3.json
+cd /workspace
 HF_HOME="/workspace/cache" huggingface-cli download Qwen/Qwen2-Audio-7B-Instruct
-bash 128_deepspeed.sh
+bash 128.sh
 ```

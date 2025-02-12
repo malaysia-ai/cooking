@@ -18,6 +18,12 @@ allow_patterns = ['mixtral-audio-instruction.zip', 'random-question-chunks.zip',
 snapshot_download(repo_id='malaysia-ai/Speech-to-Speech', repo_type='dataset', 
                   allow_patterns = allow_patterns, local_dir = './')
 \"
+python3 -c \"
+from huggingface_hub import snapshot_download
+allow_patterns = ['mixtral-audio-instruction.zip', 'random-question-chunks.zip', 'sample-filter-gpt-omni-voiceassistant-400k-*.zip']
+snapshot_download(repo_id='malaysia-ai/Speech-to-Speech', repo_type='dataset', 
+                  allow_patterns = allow_patterns, local_dir = './')
+\"
 wget https://raw.githubusercontent.com/malaysia-ai/cooking/refs/heads/main/qwen2audio/sft/unzip.py
 python3 unzip.py
 "
