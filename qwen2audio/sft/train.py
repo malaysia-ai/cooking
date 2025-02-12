@@ -23,6 +23,40 @@ https://huggingface.co/models?filter=text-generation
 # task. Pointers for this are left as comments.
 
 import torch
+
+torch._dynamo.config.optimize_ddp=False
+
+# monkey patch pytorch validation
+def _is_valid_woq_optimization_pattern():
+    def fn(match):
+        assert all(k in match.kwargs for k in ("x", "weight", "scales"))
+        try:
+            x = match.kwargs["x"].meta["val"]
+            weight = match.kwargs["weight"].meta["val"]
+            print(x.dtype, weight.dtype, x.device)
+            scales = match.kwargs["scales"].meta["val"]
+            
+            return (
+                # For now, we only support woq mm kernels
+                # with x.type=bfloat16 and w.type=int8
+                x.dtype == torch.bfloat16
+                and weight.dtype == torch.int8
+                and scales.dtype == torch.bfloat16
+                # _weight_int8pack_mm kernel only supports cpu now
+                # TODO: add cuda kernel support instead of calling mul+sum
+                and x.device.type == "cpu"
+                and x.device == weight.device
+                and x.device == scales.device
+            )
+        except Exception as e:
+            print(e, match)
+            return False
+
+    return fn
+
+from torch._inductor.fx_passes import quantization
+quantization._is_valid_woq_optimization_pattern = _is_valid_woq_optimization_pattern
+
 from torch import nn
 import logging
 import math
@@ -294,19 +328,13 @@ class Model(Qwen2AudioForConditionalGeneration):
             position_ids = position_ids,
             input_features = input_features, 
             feature_attention_mask = feature_attention_mask,
+            output_hidden_states = True,
         )
         if labels is not None:
-            logits = super_out.logits
-            vocab_size = logits.shape[-1]
-            logits = logits.float()
-            labels = labels.to(logits.device)
-            labels = nn.functional.pad(labels, (0, 1), value=-100)
-            shift_labels = labels[..., 1:].contiguous()
-            logits = logits.view(-1, vocab_size)
-            shift_labels = shift_labels.view(-1)
-            shift_labels = shift_labels.to(logits.device)
-            loss = nn.functional.cross_entropy(logits, shift_labels, ignore_index=-100, reduction='mean')
-            return {'loss': loss}
+            embeddings = super_out.hidden_states[-1]
+            auto_shift_loss = linear_cross_entropy(embeddings, self.language_model.lm_head, labels, shift=True, impl = 'torch_compile')
+            return {'loss': auto_shift_loss}
+        return super_out
 
 def main():
 
