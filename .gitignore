@@ -169,3 +169,13 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+*.jsonl
+tokenized-4k
+tokenized-audio-4096
+malaysian_sft.py
+mp.py
+*.parquet
+data
+*.json
+*.safetensors
+packing-4k

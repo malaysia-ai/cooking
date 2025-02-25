@@ -454,9 +454,10 @@ def main():
                     audios = []
                     new_files = []
                     for f in files:
-                        f = f.replace('slice-audio/', 'random-question-chunks/')
-                        f = f.replace('output-audio/', 'filter-audio/')
-                        f = f.replace('filter-gpt-omni-voiceassistant-400k/', 'sample-filter-gpt-omni-voiceassistant-400k/')
+                        if 'dialects_processed/' in f:
+                            f = f.split('husein/ssd3/')[1]
+                        if 'speech-instructions/' in f:
+                            f = f.split('speech-instructions/')[1]
                         audio = self.audio.decode_example(
                         self.audio.encode_example(f))['array']
                         audios.append(audio)
@@ -514,8 +515,8 @@ def main():
         return input_ids
 
     dataset = DatasetFixed(data_args.train_file)
-    # print('dataset', len(dataset), dataset[0])
-    # print(collator([dataset[0], dataset[1]]))
+    print('dataset', len(dataset), dataset[0])
+    print(collator([dataset[0], dataset[1]]))
 
     model = Model.from_pretrained(
         model_args.model_name_or_path, 
@@ -540,6 +541,7 @@ def main():
         task_type="CAUSAL_LM",
         target_modules=target_modules,
     )
+    print(peft_config)
 
     if hasattr(model, "enable_input_require_grads"):
         model.enable_input_require_grads()
