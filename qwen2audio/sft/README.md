@@ -7,10 +7,11 @@
 ```bash
 apt update
 apt install ninja-build vim -y
-pip3 install torch==2.6.0 torchaudio==2.6.0 deepspeed==0.15.4 accelerate==1.1.1 mosaicml-streaming
+pip3 install torch==2.6.0 torchaudio==2.6.0 deepspeed==0.15.4 mosaicml-streaming
 pip3 install datasets evaluate peft librosa soundfile
 pip3 install git+https://github.com/malaysia-ai/qwen2audio-multipack
 pip3 install git+https://github.com/malaysia-ai/ml-cross-entropy-lora-lm-head
+pip3 install git+https://github.com/malaysia-ai/accelerate-torch-compile-speechlm
 ```
 
 Optional,

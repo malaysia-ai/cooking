@@ -179,3 +179,4 @@ data
 *.json
 *.safetensors
 packing-4k
+qwen2audio/sft/speech
