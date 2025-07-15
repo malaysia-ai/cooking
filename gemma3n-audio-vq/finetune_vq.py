@@ -89,6 +89,7 @@ from transformers import Gemma3nAudioEncoder, Gemma3nConfig
 from transformers import AutoFeatureExtractor, PreTrainedModel
 from transformers.models.gemma3n.modeling_gemma3n import Gemma3nMultimodalEmbedder
 from transformers.trainer_utils import get_last_checkpoint
+from transformers import TrainerCallback, TrainerState, TrainerControl
 import librosa
 import json
 import string
@@ -172,12 +173,15 @@ class VectorQuantizer(nn.Module):
             nn.LayerNorm(embedding_dim),
         )
 
+    def set_temperature(self, temperature: float):
+        self.temperature = temperature
+
     def forward(self, inputs):
         with torch.no_grad():
             self.codebook.weight.data = F.normalize(self.codebook.weight.data, p=2, dim=1)
 
         inputs = self.pre_vq(inputs)
-        print("Mean:", inputs.mean().item(), "Std:", inputs.std().item())
+        print("Mean:", inputs.mean().item(), "Std:", inputs.std().item(), "Temperature:", self.temperature)
 
         input_shape = inputs.shape
         flat_inputs = inputs.view(-1, self.embedding_dim)
@@ -286,6 +290,19 @@ class Model(PreTrainedModel):
             print(metrics)
             return {'loss': ctc_loss + vq_loss}
 
+class TemperatureAnnealingCallback(TrainerCallback):
+    def __init__(self, vq_module, start_temp=1.0, end_temp=0.1, total_steps=10000):
+        self.vq_module = vq_module
+        self.start_temp = start_temp
+        self.end_temp = end_temp
+        self.total_steps = total_steps
+
+    def on_step_begin(self, args, state: TrainerState, control: TrainerControl, **kwargs):
+        step = state.global_step
+        fraction = min(step / self.total_steps, 1.0)
+        new_temp = self.start_temp * (1.0 - fraction) + self.end_temp * fraction
+        self.vq_module.set_temperature(new_temp)
+        
 def main():
 
     # See all possible arguments in src/transformers/training_args.py
@@ -395,6 +412,13 @@ def main():
         inputs = feature_extractor(audio, return_tensors = 'pt')
         return {'labels': padded_labels, **inputs}
 
+    anneal_callback = TemperatureAnnealingCallback(
+        vq_module=model.vq,
+        start_temp=1.0,
+        end_temp=0.1,
+        total_steps=10000
+    )
+
     trainer = Trainer(
         model=model,
         args=training_args,
@@ -402,6 +426,7 @@ def main():
         eval_dataset=None,
         data_collator=collator,
         compute_metrics=None,
+        callbacks=[anneal_callback],
         preprocess_logits_for_metrics=None,
     )
 
