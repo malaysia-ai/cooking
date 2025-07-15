@@ -20,6 +20,6 @@ torchrun --nproc_per_node 1 \
 --gradient_checkpointing false \
 --torch_dtype bfloat16 \
 --ddp_find_unused_parameters false \
---dataloader_num_workers 5 \
---dataloader_prefetch_factor 5 \
+--dataloader_num_workers 1 \
+--dataloader_prefetch_factor 10 \
 --remove_unused_columns false
