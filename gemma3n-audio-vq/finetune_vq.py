@@ -155,39 +155,70 @@ class DataTrainingArguments:
             "help": "The input training data file (a text file)."})
 
 class VectorQuantizer(nn.Module):
-    def __init__(self, embedding_dim, num_codes = 16384, commitment_cost=0.25):
+    def __init__(self, embedding_dim, num_codes=16384, commitment_cost=0.25,
+                 use_gumbel_softmax=True, temperature=1.0):
         super().__init__()
         self.embedding_dim = embedding_dim
         self.num_codes = num_codes
         self.commitment_cost = commitment_cost
+        self.use_gumbel_softmax = use_gumbel_softmax
+        self.temperature = temperature
 
         self.codebook = nn.Embedding(num_codes, embedding_dim)
-        self.codebook.weight.data.uniform_(-1 / num_codes, 1 / num_codes)
+        self.codebook.weight.data.uniform_(-1.0, 1.0)
 
-    def forward(self, inputs):
-        input_shape = inputs.shape
-        flat_inputs = inputs.view(-1, self.embedding_dim)
-
-        distances = (
-            torch.sum(flat_inputs**2, dim=1, keepdim=True)
-            - 2 * torch.matmul(flat_inputs, self.codebook.weight.T)
-            + torch.sum(self.codebook.weight**2, dim=1)
+        self.pre_vq = nn.Sequential(
+            nn.Linear(embedding_dim, embedding_dim),
+            nn.LayerNorm(embedding_dim),
         )
 
-        encoding_indices = torch.argmin(distances, dim=1).unsqueeze(1)
-        encodings = torch.zeros(encoding_indices.shape[0], self.num_codes, device=inputs.device, dtype=inputs.dtype)
-        encodings.scatter_(1, encoding_indices, 1)
+    def forward(self, inputs):
+        with torch.no_grad():
+            self.codebook.weight.data = F.normalize(self.codebook.weight.data, p=2, dim=1)
 
-        quantized = torch.matmul(encodings, self.codebook.weight)
+        inputs = self.pre_vq(inputs)
+        print("Mean:", inputs.mean().item(), "Std:", inputs.std().item())
 
+        input_shape = inputs.shape
+        flat_inputs = inputs.view(-1, self.embedding_dim)
+        flat_inputs = F.normalize(flat_inputs, p=2, dim=1)
+
+        # Compute distances
+        distances = (
+            torch.sum(flat_inputs ** 2, dim=1, keepdim=True)
+            - 2 * torch.matmul(flat_inputs, self.codebook.weight.T)
+            + torch.sum(self.codebook.weight ** 2, dim=1)
+        )
+
+        if self.use_gumbel_softmax and self.training:
+            gumbel_noise = -torch.empty_like(distances).exponential_().log()
+            logits = -distances + gumbel_noise
+            probs = F.softmax(logits / self.temperature, dim=1)
+        elif self.training:
+            probs = F.softmax(-distances / self.temperature, dim=1)
+        else:
+            encoding_indices = torch.argmin(distances, dim=1).unsqueeze(1)
+            probs = torch.zeros(encoding_indices.shape[0], self.num_codes, device=inputs.device)
+            probs.scatter_(1, encoding_indices, 1.0)
+
+        avg_probs = probs.mean(dim=0)
+        perplexity = torch.exp(-torch.sum(avg_probs * torch.log(avg_probs + 1e-10)))
+        entropy_reg = torch.sum(avg_probs * torch.log(avg_probs + 1e-10))
+        num_active_codes = (avg_probs > 0).sum()
+
+        quantized = torch.matmul(probs, self.codebook.weight)
         quantized = quantized.view(*input_shape)
+
         e_latent_loss = F.mse_loss(quantized.detach(), inputs)
         q_latent_loss = F.mse_loss(quantized, inputs.detach())
         loss = q_latent_loss + self.commitment_cost * e_latent_loss
+        loss += -1.0 * entropy_reg 
 
         quantized = inputs + (quantized - inputs).detach()
 
-        return quantized, loss, encoding_indices.view(input_shape[:-1])
+        encoding_indices = torch.argmax(probs, dim=1).view(input_shape[:-1])  # optional
+
+        return quantized, loss, encoding_indices, perplexity, num_active_codes
 
 class Audio(PreTrainedModel):
     def __init__(self, config):
@@ -225,7 +256,7 @@ class Model(PreTrainedModel):
             input_features = input_features,
             input_features_mask = input_features_mask,
         )
-        quantized, vq_loss, tokens = self.vq(output[0])
+        quantized, vq_loss, tokens, perplexity, num_active_codes = self.vq(output[0])
         quantized = quantized.repeat_interleave(2, dim=1)
         mask = (~output[1]).repeat_interleave(2, dim=1)
         out_transformer = self.transformer(quantized)
@@ -245,7 +276,14 @@ class Model(PreTrainedModel):
                 target_lengths = labels_lengths,
                 zero_infinity = True,
             )
-            print(ctc_loss, log_probs.shape, labels.shape)
+            metrics = {
+                'ctc_loss': ctc_loss,
+                'perplexity': perplexity,
+                'num_active_codes': num_active_codes,
+                'log_probs.shape': log_probs.shape,
+                'labels.shape': labels.shape,
+            }
+            print(metrics)
             return {'loss': ctc_loss + vq_loss}
 
 def main():
