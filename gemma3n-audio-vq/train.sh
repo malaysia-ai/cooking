@@ -11,11 +11,11 @@ torchrun --nproc_per_node 1 \
 --num_train_epochs 5 \
 --train_file filtered-train-cv-17.parquet \
 --logging_steps 1 \
---learning_rate 1e-4 \
+--learning_rate 2e-5 \
 --lr_scheduler_type linear \
---warmup_steps 100 \
+--warmup_steps 1000 \
 --weight_decay 0.0 \
---save_steps 1000 \
+--save_steps 200 \
 --save_total_limit 5 \
 --gradient_checkpointing false \
 --torch_dtype bfloat16 \

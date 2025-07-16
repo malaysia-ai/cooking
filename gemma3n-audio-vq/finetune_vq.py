@@ -181,8 +181,7 @@ class VectorQuantizer(nn.Module):
             self.codebook.weight.data = F.normalize(self.codebook.weight.data, p=2, dim=1)
 
         inputs = self.pre_vq(inputs)
-        print("Mean:", inputs.mean().item(), "Std:", inputs.std().item(), "Temperature:", self.temperature)
-
+        
         input_shape = inputs.shape
         flat_inputs = inputs.view(-1, self.embedding_dim)
         flat_inputs = F.normalize(flat_inputs, p=2, dim=1)
@@ -193,13 +192,14 @@ class VectorQuantizer(nn.Module):
             - 2 * torch.matmul(flat_inputs, self.codebook.weight.T)
             + torch.sum(self.codebook.weight ** 2, dim=1)
         )
-
-        if self.use_gumbel_softmax and self.training:
-            gumbel_noise = -torch.empty_like(distances).exponential_().log()
-            logits = -distances + gumbel_noise
-            probs = F.softmax(logits / self.temperature, dim=1)
-        elif self.training:
-            probs = F.softmax(-distances / self.temperature, dim=1)
+        if self.training:
+            print("Temperature:", self.temperature)
+            if self.use_gumbel_softmax:
+                gumbel_noise = -torch.empty_like(distances).exponential_().log()
+                logits = -distances + gumbel_noise
+                probs = F.softmax(logits / self.temperature, dim=1)
+            else:
+                probs = F.softmax(-distances / self.temperature, dim=1)
         else:
             encoding_indices = torch.argmin(distances, dim=1).unsqueeze(1)
             probs = torch.zeros(encoding_indices.shape[0], self.num_codes, device=inputs.device)
@@ -250,6 +250,12 @@ class Model(PreTrainedModel):
         self.encoder = GemmaAudio(config)
         out_features = self.encoder.model.embed_audio.embedding_projection.out_features
         self.vq = VectorQuantizer(out_features)
+        self.upsample = nn.ConvTranspose1d(
+            in_channels=out_features,
+            out_channels=out_features,
+            kernel_size=2,
+            stride=2
+        )
         self.transformer = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(d_model=out_features, nhead=8), num_layers=12
         )
@@ -261,7 +267,7 @@ class Model(PreTrainedModel):
             input_features_mask = input_features_mask,
         )
         quantized, vq_loss, tokens, perplexity, num_active_codes = self.vq(output[0])
-        quantized = quantized.repeat_interleave(2, dim=1)
+        quantized = self.upsample(quantized.transpose(1, 2)).transpose(1, 2)
         mask = (~output[1]).repeat_interleave(2, dim=1)
         out_transformer = self.transformer(quantized)
         logits = self.lm_head(out_transformer)
