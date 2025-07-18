@@ -46,7 +46,8 @@ def loop(rows):
         def __getitem__(self, idx):
             try:
                 return self.rows[idx], librosa.load(self.rows[idx], sr = 16000)
-            except:
+            except Exception as e:
+                print('error in dataset', e, self.rows[idx])
                 return None
     
     def collator(batch):
@@ -59,8 +60,13 @@ def loop(rows):
 
     data = CustomDataset(rows)
     dataloader = DataLoader(
-        data, batch_size=24, collate_fn = collator, 
-        num_workers = 10, prefetch_factor = 5, pin_memory = True)
+        data, 
+        batch_size=24, 
+        collate_fn=collator, 
+        num_workers=10, 
+        prefetch_factor=5, 
+        pin_memory=True,
+    )
     
     for batch in tqdm(iter(dataloader)):
         try:
@@ -71,7 +77,7 @@ def loop(rows):
                 with open(splitted, 'w') as fopen:
                     json.dump(tokens[no], fopen)
         except Exception as e:
-            print(e)
+            print('error in iter', e)
 
 @click.command()
 @click.option('--path', default = '*segment/*.mp3')
