@@ -61,7 +61,7 @@ from transformers.testing_utils import CaptureLogger
 from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils import check_min_version, send_example_telemetry
 from transformers.utils.versions import require_version
-from transformers import Qwen2ForCausalLM
+from transformers import Qwen3ForCausalLM
 import streaming
 import json
 import numpy as np
@@ -218,7 +218,7 @@ def block_diagonal_concat_inverted(*masks, dtype=torch.bfloat16):
     inverted_mask = torch.where(combined_mask == 1, torch.tensor(0, dtype=dtype), min_value)
     return inverted_mask.unsqueeze(0)
 
-class Model(Qwen2ForCausalLM):
+class Model(Qwen3ForCausalLM):
     def __init__(self, config):
         super().__init__(config)
         
@@ -236,7 +236,6 @@ class Model(Qwen2ForCausalLM):
                 self.lm_head.weight.to(torch.bfloat16), 
                 labels, 
                 shift=True,
-                impl="cce_kahan_full_c",
             )
             return {'loss': auto_shift_loss}
         return super_out
