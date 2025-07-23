@@ -2,7 +2,7 @@ WANDB_PROJECT="Qwen-Qwen2.5-1.5B-STT-10k" \
 TORCH_DISTRIBUTED_DEBUG="info" \
 CUDA_VISIBLE_DEVICES="0" \
 torchrun --nproc_per_node 1 \
--m qwen2_multipacking \
+-m qwen2_multipacking_flash \
 --model_name_or_path "Qwen/Qwen2.5-1.5B" \
 --per_device_train_batch_size 6 \
 --gradient_accumulation_steps 4 \
