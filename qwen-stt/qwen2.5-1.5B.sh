@@ -19,4 +19,5 @@ torchrun --nproc_per_node 1 \
 --torch_dtype bfloat16 \
 --ddp_find_unused_parameters false \
 --dataloader_num_workers 5 \
---dataloader_prefetch_factor 5
+--dataloader_prefetch_factor 5 \
+--remove_unused_columns false

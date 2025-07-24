@@ -205,6 +205,7 @@ class Model(Qwen2ForCausalLM):
             position_ids = position_ids, 
             attention_mask = attention_mask, 
             output_hidden_states = True,
+            **kwargs,
         )
         if labels is not None:
             embeddings = super_out.last_hidden_state
