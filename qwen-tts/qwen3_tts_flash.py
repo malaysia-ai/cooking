@@ -69,6 +69,15 @@ import pandas as pd
 from streaming import LocalDataset
 from streaming.base.format.mds.encodings import Encoding, _encodings
 from cut_cross_entropy import linear_cross_entropy
+from liger_kernel.transformers import apply_liger_kernel_to_qwen3
+
+apply_liger_kernel_to_qwen3(
+    rope=True,
+    swiglu=True,
+    rms_norm=True,
+    cross_entropy=False,
+    fused_linear_cross_entropy=False,
+)
 
 torch.serialization.add_safe_globals([np.core.multiarray._reconstruct])
 
