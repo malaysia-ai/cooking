@@ -351,6 +351,10 @@ def main():
             data.pop('text', None)
             data.pop('token_type_ids', None)
 
+            if data['attention_mask'].max() >= sequence_length:
+                print(data)
+                return
+
             for k in data.keys():
                 data[k] = data[k].astype(np.int64)
         
