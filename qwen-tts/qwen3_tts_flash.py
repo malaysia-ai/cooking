@@ -36,10 +36,6 @@ from dataclasses import dataclass, field
 from itertools import chain
 from typing import Optional
 
-import datasets
-import evaluate
-from datasets import load_dataset
-
 import transformers
 import random
 from transformers import (
@@ -65,7 +61,6 @@ from transformers import Qwen3ForCausalLM
 import streaming
 import json
 import numpy as np
-import pandas as pd
 from streaming import LocalDataset
 from streaming.base.format.mds.encodings import Encoding, _encodings
 from cut_cross_entropy import linear_cross_entropy
@@ -80,10 +75,6 @@ apply_liger_kernel_to_qwen3(
 )
 
 torch.serialization.add_safe_globals([np.core.multiarray._reconstruct])
-
-require_version(
-    "datasets>=1.8.0",
-    "To fix: pip install -r examples/pytorch/language-modeling/requirements.txt")
 
 logger = logging.getLogger(__name__)
 
@@ -208,7 +199,7 @@ class Model(Qwen3ForCausalLM):
     def __init__(self, config):
         super().__init__(config)
         
-    def forward(self, input_ids, attention_mask = None, position_ids = None, labels = None, **kwargs):
+    def forward(self, input_ids, attention_mask=None, position_ids=None, labels=None, num_items_in_batch=None, **kwargs):
         super_out = self.model.forward(
             input_ids = input_ids, 
             position_ids = position_ids, 
@@ -218,14 +209,20 @@ class Model(Qwen3ForCausalLM):
         )
         if labels is not None:
             embeddings = super_out.last_hidden_state
-            auto_shift_loss = linear_cross_entropy(
+            reduction = "sum" if num_items_in_batch is not None else "mean"
+            loss = linear_cross_entropy(
                 embeddings, 
                 self.lm_head.weight, 
                 labels, 
                 shift=True,
-                impl="cce_kahan_full_c"
+                impl="cce_kahan_full_c",
+                reduction=reduction,
             )
-            return {'loss': auto_shift_loss}
+            if reduction == "sum":
+                if torch.is_tensor(num_items_in_batch):
+                    num_items_in_batch = num_items_in_batch.to(loss.device)
+                loss = loss / num_items_in_batch
+            return {'loss': loss}
         return super_out
 
 def main():
@@ -270,7 +267,6 @@ def main():
 
     log_level = training_args.get_process_log_level()
     logger.setLevel(log_level)
-    datasets.utils.logging.set_verbosity(log_level)
     transformers.utils.logging.set_verbosity(log_level)
     transformers.utils.logging.enable_default_handler()
     transformers.utils.logging.enable_explicit_format()
