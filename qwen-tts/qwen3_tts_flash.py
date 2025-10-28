@@ -55,7 +55,6 @@ from transformers import (
 )
 from transformers.testing_utils import CaptureLogger
 from transformers.trainer_utils import get_last_checkpoint
-from transformers.utils import check_min_version, send_example_telemetry
 from transformers.utils.versions import require_version
 from transformers import Qwen3ForCausalLM
 import streaming
@@ -64,7 +63,7 @@ import numpy as np
 from streaming import LocalDataset
 from streaming.base.format.mds.encodings import Encoding, _encodings
 from cut_cross_entropy import linear_cross_entropy
-from liger_kernel.transformers import apply_liger_kernel_to_qwen3
+from liger_kernel.transformers import apply_liger_kernel_to_qwen3, LigerFusedLinearCrossEntropyLoss
 
 apply_liger_kernel_to_qwen3(
     rope=True,
@@ -195,7 +194,7 @@ class DataTrainingArguments:
         },
     )
 
-class Model(Qwen3ForCausalLM):
+class ModelCCE(Qwen3ForCausalLM):
     def __init__(self, config):
         super().__init__(config)
         
@@ -225,6 +224,30 @@ class Model(Qwen3ForCausalLM):
             return {'loss': loss}
         return super_out
 
+class Model(Qwen3ForCausalLM):
+    def __init__(self, config):
+        super().__init__(config)
+        self.loss = LigerFusedLinearCrossEntropyLoss(reduction="sum")
+        
+    def forward(self, input_ids, attention_mask=None, position_ids=None, labels=None, num_items_in_batch=None, **kwargs):
+        super_out = self.model.forward(
+            input_ids = input_ids,
+            position_ids = position_ids, 
+            attention_mask = attention_mask, 
+            output_hidden_states = True,
+            **kwargs,
+        )
+        if labels is not None:
+            embeddings = super_out.last_hidden_state
+            embeddings = embeddings.reshape(-1, embeddings.shape[-1])
+            labels = labels.reshape(-1)
+            loss = self.loss(self.lm_head.weight, embeddings, labels)
+            print(embeddings.dtype, loss.dtype, num_items_in_batch)
+            num_items_in_batch = num_items_in_batch.to(loss.device)
+            loss = loss / num_items_in_batch
+            return {'loss': loss}
+        return super_out
+
 def main():
 
     # See all possible arguments in src/transformers/training_args.py
@@ -239,19 +262,6 @@ def main():
             json_file=os.path.abspath(sys.argv[1]))
     else:
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
-
-    if model_args.use_auth_token is not None:
-        warnings.warn(
-            "The `use_auth_token` argument is deprecated and will be removed in v4.34.",
-            FutureWarning)
-        if model_args.token is not None:
-            raise ValueError(
-                "`token` and `use_auth_token` are both specified. Please set only the argument `token`.")
-        model_args.token = model_args.use_auth_token
-
-    # Sending telemetry. Tracking the example usage helps us better allocate resources to maintain them. The
-    # information sent is the one passed as arguments along with your Python/PyTorch versions.
-    send_example_telemetry("run_clm", model_args, data_args)
 
     # Setup logging
     logging.basicConfig(
@@ -286,34 +296,6 @@ def main():
     # Set seed before initializing model.
     set_seed(training_args.seed)
 
-    # See more about loading any type of standard or custom dataset (from files, python dict, pandas DataFrame, etc) at
-    # https://huggingface.co/docs/datasets/loading_datasets.html.
-
-    # Load pretrained model and tokenizer
-    #
-    # Distributed training:
-    # The .from_pretrained methods guarantee that only one local process can concurrently
-    # download model & vocab.
-
-    config_kwargs = {
-        "cache_dir": model_args.cache_dir,
-        "revision": model_args.model_revision,
-        "token": model_args.token,
-        "trust_remote_code": model_args.trust_remote_code,
-    }
-
-    if model_args.config_name:
-        config = AutoConfig.from_pretrained(model_args.config_name, **config_kwargs)
-    elif model_args.model_name_or_path:
-        config = AutoConfig.from_pretrained(model_args.model_name_or_path, **config_kwargs)
-    else:
-        config = CONFIG_MAPPING[model_args.model_type]()
-        logger.warning("You are instantiating a new config instance from scratch.")
-        if model_args.config_overrides is not None:
-            logger.info(f"Overriding config: {model_args.config_overrides}")
-            config.update_from_string(model_args.config_overrides)
-            logger.info(f"New config: {config}")
-
     tokenizer = AutoTokenizer.from_pretrained(model_args.model_name_or_path)
     extra = [AddedToken('<|speech_start|>')]
     for i in range(65536):
@@ -325,7 +307,6 @@ def main():
         if model_args.torch_dtype in ["auto", None]
         else getattr(torch, model_args.torch_dtype)
     )
-    min_dtype = torch.finfo(torch_dtype).min
     sequence_length = data_args.block_size
 
     class UInt32(Encoding):
