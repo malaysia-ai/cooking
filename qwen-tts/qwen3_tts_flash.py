@@ -239,10 +239,10 @@ class Model(Qwen3ForCausalLM):
         )
         if labels is not None:
             embeddings = super_out.last_hidden_state
-            embeddings = embeddings.reshape(-1, embeddings.shape[-1])
+            embeddings = embeddings[:,:-1].reshape(-1, embeddings.shape[-1])
+            labels = labels[..., 1:].contiguous()
             labels = labels.reshape(-1)
             loss = self.loss(self.lm_head.weight, embeddings, labels)
-            print(embeddings.dtype, loss.dtype, num_items_in_batch)
             num_items_in_batch = num_items_in_batch.to(loss.device)
             loss = loss / num_items_in_batch
             return {'loss': loss}
